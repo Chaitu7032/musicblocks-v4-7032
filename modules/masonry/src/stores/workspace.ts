@@ -434,6 +434,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                 const isRoot = tower.root.model.id === target.model.id;
                 let liveTarget: Extract<TowerNode, { kind: 'statement' }> | null = null;
                 let foundPrev: Extract<TowerNode, { kind: 'statement' }> | null = null;
+                let foundCavityParent: Extract<TowerNode, { kind: 'statement' }> | null = null;
 
                 if (isRoot) {
                     if (tower.root.kind !== 'statement') return state;
@@ -454,6 +455,17 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                                 }
                                 stack.push(current.next);
                             }
+                            if (current.nestedNext) {
+                                if (current.nestedNext.model.id === target.model.id) {
+                                    liveTarget = current.nestedNext as Extract<
+                                        TowerNode,
+                                        { kind: 'statement' }
+                                    >;
+                                    foundCavityParent = current;
+                                    break;
+                                }
+                                stack.push(current.nestedNext);
+                            }
                         }
                     }
                 }
@@ -465,6 +477,30 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                     foundPrev.next = liveTarget.next;
                     if (liveTarget.next && 'prev' in liveTarget.next) {
                         liveTarget.next.prev = foundPrev;
+                    }
+                } else if (foundCavityParent) {
+                    foundCavityParent.nestedNext = liveTarget.next;
+                    if (liveTarget.next) {
+                        if ('prev' in liveTarget.next) {
+                            liveTarget.next.prev = foundCavityParent;
+                        }
+                        if (foundCavityParent.model.hasNesting) {
+                            let current: TowerNode | null = liveTarget.next;
+                            let totalH = 0;
+                            let maxW = 0;
+                            while (current !== null) {
+                                totalH += current.model.dims?.h ?? 0;
+                                maxW = Math.max(maxW, current.model.dims?.w ?? 0);
+                                current = 'next' in current ? current.next : null;
+                            }
+                            foundCavityParent.model.nestingDims = { w: maxW, h: totalH };
+                            foundCavityParent.model.computeDims();
+                            foundCavityParent.model.computeOutline();
+                        }
+                    } else if (foundCavityParent.model.hasNesting) {
+                        foundCavityParent.model.nestingDims = null;
+                        foundCavityParent.model.computeDims();
+                        foundCavityParent.model.computeOutline();
                     }
                 }
 
