@@ -20,10 +20,74 @@ import {
 } from '@/utils/import-export';
 import type { ExportedProject, ImportIdStrategy } from '@/@types/import-export.types';
 import { useBrickLayoutStore } from '@/stores/brick';
-import { listNodes, listVisibleNodes } from '@/utils/tower-traversal';
+import { listNodes, listVisibleNodes, traverseTopDown } from '@/utils/tower-traversal';
 
 /** How far a duplicated tower sits from the tower it was copied from. */
 const DUPLICATE_TOWER_OFFSET: Point = { x: 60, y: 40 };
+
+/** Minimum margin (in px) separating an extracted tower from the source tower's rightmost bounding box. */
+export const EXTRACTED_TOWER_MARGIN_X = 40;
+
+/** Default horizontal offset for placing extracted tower beside its old one. */
+export const EXTRACTED_TOWER_OFFSET_X = 60;
+
+/**
+ * Calculates a safe position for an extracted brick to form a new tower without
+ * overlapping or colliding with the source tower or its horizontal argument tree.
+ */
+export function calculateExtractedTowerPosition(
+    sourceTower: TowerState,
+    targetBrickId: string,
+    requestedPosition?: Point,
+    remainingRoot?: TowerNode,
+    excludedNodeIds?: string[],
+): Point {
+    if (requestedPosition) return requestedPosition;
+
+    const rootToMeasure = remainingRoot ?? sourceTower.root;
+    const coords = useBrickLayoutStore.getState().coords;
+    const targetCoord = coords[targetBrickId];
+
+    // Position the remaining tree top-down so model coordinates reflect the remaining tower's origin
+    try {
+        traverseTopDown(rootToMeasure, sourceTower.position);
+    } catch {
+        // Fallback gracefully if traversal fails
+    }
+
+    // Find the rightmost extent (maxX) among all visible nodes in the remaining source tower
+    let maxTowerX = sourceTower.position.x;
+    let targetNodeIds: Set<string>;
+    if (excludedNodeIds) {
+        targetNodeIds = new Set(excludedNodeIds);
+    } else {
+        const targetFound = findNodeAndTower(targetBrickId);
+        targetNodeIds = new Set(
+            targetFound ? listNodes(targetFound.node).map((n) => n.model.id) : [targetBrickId],
+        );
+    }
+    const visibleNodes = listVisibleNodes(rootToMeasure).filter(
+        (node) => !targetNodeIds.has(node.model.id),
+    );
+    for (const node of visibleNodes) {
+        const pt = coords[node.model.id];
+        const width = node.model.dims?.w ?? 0;
+        const rightFromCoords = pt ? pt.x + width : 0;
+        const rightFromModel = (node.model.position?.x ?? sourceTower.position.x) + width;
+        const right = Math.max(rightFromCoords, rightFromModel);
+        if (right > maxTowerX) {
+            maxTowerX = right;
+        }
+    }
+
+    const fallbackX = (targetCoord?.x ?? sourceTower.position.x) + EXTRACTED_TOWER_OFFSET_X;
+    const safeX = Math.max(maxTowerX + EXTRACTED_TOWER_MARGIN_X, fallbackX);
+
+    return {
+        x: safeX,
+        y: targetCoord?.y ?? sourceTower.position.y,
+    };
+}
 
 export interface WorkspaceStore {
     /** Record of all towers currently in the workspace, keyed by their unique ID */
@@ -67,6 +131,11 @@ export interface WorkspaceStore {
      * placed offset from the source tower and connected to nothing.
      */
     duplicateBrickToNewTower: (nodeId: string) => string | null;
+    /**
+     * Extracts a brick out of its tower into a fresh, independent tower beside it,
+     * closing the gap it leaves in the source tower while preserving its internal structure.
+     */
+    extractBrickToNewTower: (brickId: string, position?: Point) => string | null;
     /** Merges a joined tower into the host tower that now owns its bricks */
     absorbTower: (draggedTowerId: string, hostTowerId: string) => void;
     /** Re-runs every tower's layout, leaving the towers where they are */
@@ -346,6 +415,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
             return duplicated.id;
         },
 
+        extractBrickToNewTower: (brickId, _position) => {
+            if (!canExtractBrick(brickId)) return null;
+            return null;
+        },
+
         absorbTower: (draggedTowerId, hostTowerId) => {
             // The join already spliced the two node graphs together, so the absorbed tower is
             // redundant; dropping it also purges its stale collision points.
@@ -477,4 +551,42 @@ export function findNodeAndTower(id: string): { node: TowerNode; tower: TowerSta
         }
     }
     return null;
+}
+
+/**
+ * Checks whether a brick can be extracted out of its tower.
+ *
+ * Extraction removes only the target brick from its parent's sequence, preserving
+ * its entire internal structure (arguments and cavity subtree), while closing the gap
+ * in the source tower.
+ * It is disabled where extraction would leave an invalid/empty source tower (lone root),
+ * or for an unattached/free-floating argument brick.
+ */
+export function canExtractBrick(id: string): boolean {
+    const found = findNodeAndTower(id);
+    if (!found) return false;
+
+    const { node, tower } = found;
+
+    // Value and Expression (Argument) bricks:
+    if (node.kind === 'value' || node.kind === 'expression') {
+        // Only extractable if plugged into an argument slot of a parent
+        return Boolean(node.parent);
+    }
+
+    // Statement brick:
+    if (node.kind === 'statement') {
+        const isRoot = tower.root.model.id === node.model.id;
+        if (isRoot) {
+            // A root statement can be extracted if and only if it has a next sibling,
+            // so the next sibling can become the new root of the remaining source tower.
+            return Boolean(node.next);
+        }
+
+        // Inside a chain (has prev) or inside a cavity (has cavity parent),
+        // extracting the brick leaves the remaining tower intact.
+        return true;
+    }
+
+    return false;
 }

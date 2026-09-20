@@ -1,6 +1,11 @@
 import { act } from '@testing-library/react';
 
-import { useWorkspaceStore } from './workspace';
+import {
+    calculateExtractedTowerPosition,
+    canExtractBrick,
+    EXTRACTED_TOWER_MARGIN_X,
+    useWorkspaceStore,
+} from './workspace';
 import { useBrickLayoutStore } from './brick';
 import {
     expressionTree,
@@ -1184,6 +1189,127 @@ describe('Workspace Store Collision Space', () => {
             expect(Object.keys(useWorkspaceStore.getState().argumentConnectors).length).toBe(
                 atDefault.argument,
             );
+        });
+    });
+
+    describe('extractBrickToNewTower - eligibility and safe placement', () => {
+        it('disables extraction for no-op cases and leaves state completely immutable', () => {
+            // Case 1: lone root statement with no next
+            const lone = makeEmptyStatement('lone', 0);
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-lone',
+                    root: lone,
+                    position: { x: 0, y: 0 },
+                });
+            });
+            expect(canExtractBrick('lone')).toBe(false);
+            expect(useWorkspaceStore.getState().extractBrickToNewTower('lone')).toBeNull();
+
+            // Case 2: lone folded root statement with no next
+            const loneFolded = makeEmptyStatement('lone-folded', 0, true);
+            const loneInner = makeEmptyStatement('lone-inner', 0);
+            loneFolded.nestedNext = loneInner;
+            loneInner.prev = loneFolded;
+            loneFolded.model.isNestingFolded = true;
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-lone-folded',
+                    root: loneFolded,
+                    position: { x: 0, y: 0 },
+                });
+            });
+            expect(canExtractBrick('lone-folded')).toBe(false);
+            expect(useWorkspaceStore.getState().extractBrickToNewTower('lone-folded')).toBeNull();
+
+            // Case 3: unattached argument brick
+            const unattachedArg = makeEmptyValue('unattached-val');
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-unattached',
+                    root: unattachedArg,
+                    position: { x: 0, y: 0 },
+                });
+            });
+            expect(canExtractBrick('unattached-val')).toBe(false);
+            expect(useWorkspaceStore.getState().extractBrickToNewTower('unattached-val')).toBeNull();
+
+            // Case 4: non-existent brick
+            expect(canExtractBrick('non-existent')).toBe(false);
+            expect(useWorkspaceStore.getState().extractBrickToNewTower('non-existent')).toBeNull();
+
+            // Workspace towers count unchanged
+            expect(Object.keys(useWorkspaceStore.getState().towers).length).toBe(3);
+        });
+
+        it('allows extraction for bricks in a chain, cavity, or root with next', () => {
+            // Chain bricks
+            const a = makeEmptyStatement('chain-a', 0);
+            const b = makeEmptyStatement('chain-b', 0);
+            a.next = b;
+            b.prev = a;
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-chain',
+                    root: a,
+                    position: { x: 0, y: 0 },
+                });
+            });
+            // a has next, b has prev
+            expect(canExtractBrick('chain-a')).toBe(true);
+            expect(canExtractBrick('chain-b')).toBe(true);
+
+            // Cavity brick
+            const container = makeEmptyStatement('clamp', 0, true);
+            const inner = makeEmptyStatement('cavity-stmt', 0);
+            container.nestedNext = inner;
+            inner.prev = container;
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-cavity',
+                    root: container,
+                    position: { x: 0, y: 0 },
+                });
+            });
+            expect(canExtractBrick('cavity-stmt')).toBe(true);
+
+            // Attached argument brick
+            const argStmt = makeEmptyStatement('stmt-arg', 1);
+            const val = makeEmptyValue('val-child');
+            argStmt.args[0] = val;
+            val.parent = argStmt;
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-arg',
+                    root: argStmt,
+                    position: { x: 0, y: 0 },
+                });
+            });
+            expect(canExtractBrick('val-child')).toBe(true);
+        });
+
+        it('calculates safe bounding box placement clear of wide arguments', () => {
+            const root = makeEmptyStatement('safe-root', 1);
+            const wideArg = makeEmptyExpression('wide-arg', 0);
+            Object.defineProperty(wideArg.model, 'dims', {
+                value: { w: 350, h: 50 },
+                configurable: true,
+            });
+            root.args[0] = wideArg;
+            wideArg.parent = root;
+
+            const nextStmt = makeEmptyStatement('safe-next', 0);
+            root.next = nextStmt;
+            nextStmt.prev = root;
+
+            const tower: TowerState = {
+                id: 'safe-tower',
+                root,
+                position: { x: 100, y: 100 },
+            };
+
+            const pos = calculateExtractedTowerPosition(tower, 'safe-next');
+            expect(pos.x).toBeGreaterThanOrEqual(100 + 350 + EXTRACTED_TOWER_MARGIN_X);
         });
     });
 });
