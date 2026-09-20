@@ -1939,5 +1939,122 @@ describe('Workspace Store Collision Space', () => {
             expect(extractedRoot.prev).toBeNull();
             expect(extractedRoot.next).toBeNull();
         });
+
+        it('routes argument bricks to detachBrickToNewTower', () => {
+            const stmt = makeEmptyStatement('stmt-with-arg', 1);
+            const argExpr = makeEmptyExpression('arg-expr', 1);
+            const childVal = makeEmptyValue('child-val');
+
+            stmt.args[0] = argExpr;
+            argExpr.parent = stmt;
+            argExpr.args[0] = childVal;
+            childVal.parent = argExpr;
+
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-arg',
+                    root: stmt,
+                    position: { x: 100, y: 100 },
+                });
+            });
+
+            expect(canExtractBrick('arg-expr')).toBe(true);
+
+            let newTowerId: string | null = null;
+            act(() => {
+                newTowerId = useWorkspaceStore.getState().extractBrickToNewTower('arg-expr');
+            });
+
+            expect(newTowerId).toBeTruthy();
+            const towers = useWorkspaceStore.getState().towers;
+            const sourceTower = towers['tower-arg'];
+            const newTower = towers[newTowerId!];
+
+            expect((sourceTower.root as TowerStatementNode).args[0]).toBeNull();
+
+            expect(newTower.root.model.id).toBe('arg-expr');
+            expect((newTower.root as TowerExpressionNode).parent).toBeNull();
+            expect((newTower.root as TowerExpressionNode).args[0]?.model.id).toBe('child-val');
+
+            expectGraphAcyclic(sourceTower.root);
+            expectGraphAcyclic(newTower.root);
+            expectPointersConsistent(sourceTower.root);
+            expectPointersConsistent(newTower.root);
+        });
+
+        it('handles interleaved extraction and drag operations correctly', () => {
+            const a = makeEmptyStatement('inter-a', 0);
+            const b = makeEmptyStatement('inter-b', 0);
+            const c = makeEmptyStatement('inter-c', 0);
+            const d = makeEmptyStatement('inter-d', 0);
+            const e = makeEmptyStatement('inter-e', 0);
+
+            a.next = b;
+            b.prev = a;
+            b.next = c;
+            c.prev = b;
+            c.next = d;
+            d.prev = c;
+            d.next = e;
+            e.prev = d;
+
+            act(() => {
+                useWorkspaceStore.getState().createTower({
+                    id: 'tower-interleaved',
+                    root: a,
+                    position: { x: 0, y: 0 },
+                });
+            });
+
+            // 1. Extract 'inter-c'
+            let extractedId: string | null = null;
+            act(() => {
+                extractedId = useWorkspaceStore.getState().extractBrickToNewTower('inter-c');
+            });
+            expect(extractedId).toBeTruthy();
+
+            // 2. Drag 'inter-d' out to a new tower
+            let draggedId: string | null = null;
+            act(() => {
+                draggedId = useWorkspaceStore
+                    .getState()
+                    .detachBrickToNewTower('tower-interleaved', 'inter-d', { x: 500, y: 500 });
+            });
+            expect(draggedId).toBeTruthy();
+
+            const towers = useWorkspaceStore.getState().towers;
+            expect(Object.keys(towers).length).toBe(3);
+
+            const source = towers['tower-interleaved'];
+            const extracted = towers[extractedId!];
+            const dragged = towers[draggedId!];
+
+            // Source: a -> b
+            expect(source.root.model.id).toBe('inter-a');
+            expect((source.root as TowerStatementNode).next?.model.id).toBe('inter-b');
+            expect(((source.root as TowerStatementNode).next as TowerStatementNode).next).toBeNull();
+
+            // Extracted: c alone
+            expect(extracted.root.model.id).toBe('inter-c');
+            expect((extracted.root as TowerStatementNode).prev).toBeNull();
+            expect((extracted.root as TowerStatementNode).next).toBeNull();
+
+            // Dragged: d -> e
+            expect(dragged.root.model.id).toBe('inter-d');
+            expect((dragged.root as TowerStatementNode).prev).toBeNull();
+            expect((dragged.root as TowerStatementNode).next?.model.id).toBe('inter-e');
+
+            for (const t of [source, extracted, dragged]) {
+                expectGraphAcyclic(t.root);
+                expectPointersConsistent(t.root);
+            }
+
+            const allNodeIds = [
+                ...listNodes(source.root).map((n) => n.model.id),
+                ...listNodes(extracted.root).map((n) => n.model.id),
+                ...listNodes(dragged.root).map((n) => n.model.id),
+            ].sort();
+            expect(allNodeIds).toEqual(['inter-a', 'inter-b', 'inter-c', 'inter-d', 'inter-e']);
+        });
     });
 });

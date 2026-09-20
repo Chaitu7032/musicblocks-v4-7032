@@ -423,6 +423,30 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
             const { node: target, tower: sourceTower } = found;
 
+            // Route Argument Bricks (value / expression) to detachBrickToNewTower
+            if (target.kind === 'value' || target.kind === 'expression') {
+                const extractedIds = listNodes(target).map((n) => n.model.id);
+                const newPos = calculateExtractedTowerPosition(
+                    sourceTower,
+                    brickId,
+                    position,
+                    sourceTower.root,
+                    extractedIds,
+                );
+                // Reset positioned flags for the extracted bricks in layout store to prevent stale flashes
+                useBrickLayoutStore
+                    .getState()
+                    .setPositioned(Object.fromEntries(extractedIds.map((id) => [id, false])));
+
+                const id = get().detachBrickToNewTower(sourceTower.id, brickId, newPos);
+                if (id) {
+                    import('@/stores/history').then(({ useWorkspaceHistoryStore }) => {
+                        useWorkspaceHistoryStore.getState().commit();
+                    });
+                }
+                return id;
+            }
+
             if (target.kind !== 'statement') return null;
 
             let newTowerId: string | null = null;
