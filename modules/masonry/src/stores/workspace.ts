@@ -431,47 +431,66 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                 const tower = state.towers[sourceTower.id];
                 if (!tower) return state;
 
+                const isRoot = tower.root.model.id === target.model.id;
                 let liveTarget: Extract<TowerNode, { kind: 'statement' }> | null = null;
                 let foundPrev: Extract<TowerNode, { kind: 'statement' }> | null = null;
 
-                const stack: TowerNode[] = [tower.root];
-                while (stack.length > 0) {
-                    const current = stack.pop()!;
-                    if (current.kind === 'statement') {
-                        if (current.next) {
-                            if (current.next.model.id === target.model.id) {
-                                liveTarget = current.next as Extract<
-                                    TowerNode,
-                                    { kind: 'statement' }
-                                >;
-                                foundPrev = current;
-                                break;
+                if (isRoot) {
+                    if (tower.root.kind !== 'statement') return state;
+                    liveTarget = tower.root as Extract<TowerNode, { kind: 'statement' }>;
+                } else {
+                    const stack: TowerNode[] = [tower.root];
+                    while (stack.length > 0) {
+                        const current = stack.pop()!;
+                        if (current.kind === 'statement') {
+                            if (current.next) {
+                                if (current.next.model.id === target.model.id) {
+                                    liveTarget = current.next as Extract<
+                                        TowerNode,
+                                        { kind: 'statement' }
+                                    >;
+                                    foundPrev = current;
+                                    break;
+                                }
+                                stack.push(current.next);
                             }
-                            stack.push(current.next);
                         }
                     }
                 }
 
-                if (!liveTarget || !foundPrev) return state;
+                if (!liveTarget) return state;
 
-                // Close outer sequence gap in source tower
-                foundPrev.next = liveTarget.next;
-                if (liveTarget.next && 'prev' in liveTarget.next) {
-                    liveTarget.next.prev = foundPrev;
+                // 1. Close outer sequence gap in source tower
+                if (foundPrev) {
+                    foundPrev.next = liveTarget.next;
+                    if (liveTarget.next && 'prev' in liveTarget.next) {
+                        liveTarget.next.prev = foundPrev;
+                    }
                 }
 
-                // Clean extracted brick's outer sequence pointers ONLY
+                // 2. Update source tower root if target was root
+                let newSourceRoot = tower.root;
+                if (isRoot) {
+                    if (!liveTarget.next) return state;
+                    if ('prev' in liveTarget.next) {
+                        liveTarget.next.prev = null;
+                    }
+                    newSourceRoot = liveTarget.next;
+                }
+
+                // 3. Clean extracted brick's outer sequence pointers ONLY
                 liveTarget.prev = null;
                 liveTarget.next = null;
 
-                // Build new tower beside the original tower using safe placement
+                // 4. Build new tower beside the original tower using safe placement
                 extractedIds = listNodes(liveTarget).map((n) => n.model.id);
                 newTowerId = `tower-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                const remainingRoot = isRoot ? newSourceRoot : tower.root;
                 const newTowerPosition = calculateExtractedTowerPosition(
                     tower,
                     brickId,
                     position,
-                    tower.root,
+                    remainingRoot,
                     extractedIds,
                 );
 
@@ -486,7 +505,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                         ...state.towers,
                         [sourceTower.id]: {
                             ...tower,
-                            root: { ...tower.root },
+                            root: isRoot ? { ...newSourceRoot } : { ...tower.root },
                         },
                         [newTowerId]: newTower,
                     },
